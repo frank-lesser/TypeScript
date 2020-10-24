@@ -481,6 +481,26 @@ export class A {
             changes: emptyArray
         });
 
+        verifyTscWatch({
+            scenario,
+            subScenario: "change module to none",
+            commandLineArgs: ["-w", "-p", configFilePath],
+            sys: () => {
+                const file1 = {
+                    path: "/a/b/f1.ts",
+                    content: "export {}\ndeclare global {}"
+                };
+                return createWatchedSystem([file1, libFile, configFile]);
+            },
+            changes: [{
+                caption: "change `module` to 'none'",
+                timeouts: checkSingleTimeoutQueueLengthAndRun,
+                change: sys => {
+                    sys.writeFile(configFilePath, JSON.stringify({ compilerOptions: { module: "none" } }));
+                }
+            }]
+        });
+
         it("correctly migrate files between projects", () => {
             const file1 = {
                 path: "/a/b/f1.ts",
@@ -552,6 +572,30 @@ export class A {
                     caption: "Modify config to make f2 as root too",
                     change: sys => sys.writeFile(configFilePath, JSON.stringify({ compilerOptions: {}, files: ["f1.ts", "f2.ts"] })),
                     timeouts: checkSingleTimeoutQueueLengthAndRun,
+                }
+            ]
+        });
+
+        verifyTscWatch({
+            scenario,
+            subScenario: "can correctly update configured project when set of root files has changed through include",
+            commandLineArgs: ["-w", "-p", "."],
+            sys: () => {
+                const file1 = {
+                    path: `${projectRoot}/Project/file1.ts`,
+                    content: "export const x = 10;"
+                };
+                const configFile = {
+                    path: `${projectRoot}/Project/tsconfig.json`,
+                    content: JSON.stringify({ include: [".", "./**/*.json"] })
+                };
+                return createWatchedSystem([file1, libFile, configFile], { currentDirectory: `${projectRoot}/Project` });
+            },
+            changes: [
+                {
+                    caption: "Write file2",
+                    change: sys => sys.writeFile(`${projectRoot}/Project/file2.ts`, "export const y = 10;"),
+                    timeouts: checkSingleTimeoutQueueLengthAndRun
                 }
             ]
         });
@@ -707,18 +751,23 @@ declare const eval: any`
             changes: emptyArray
         });
 
+        function runQueuedTimeoutCallbacksTwice(sys: WatchedSystem) {
+            sys.runQueuedTimeoutCallbacks(); // Scheduled invalidation of resolutions
+            sys.runQueuedTimeoutCallbacks(); // Actual update
+        }
+
         const changeModuleFileToModuleFile1: TscWatchCompileChange = {
             caption: "Rename moduleFile to moduleFile1",
             change: sys => {
                 sys.renameFile("/a/b/moduleFile.ts", "/a/b/moduleFile1.ts");
                 sys.deleteFile("/a/b/moduleFile.js");
             },
-            timeouts: runQueuedTimeoutCallbacks
+            timeouts: runQueuedTimeoutCallbacksTwice
         };
         const changeModuleFile1ToModuleFile: TscWatchCompileChange = {
             caption: "Rename moduleFile1 back to moduleFile",
             change: sys => sys.renameFile("/a/b/moduleFile1.ts", "/a/b/moduleFile.ts"),
-            timeouts: runQueuedTimeoutCallbacks,
+            timeouts: runQueuedTimeoutCallbacksTwice,
         };
 
         verifyTscWatch({
@@ -803,7 +852,7 @@ declare const eval: any`
                 {
                     caption: "Create module file",
                     change: sys => sys.writeFile("/a/b/moduleFile.ts", "export function bar() { }"),
-                    timeouts: runQueuedTimeoutCallbacks,
+                    timeouts: runQueuedTimeoutCallbacksTwice,
                 }
             ]
         });
@@ -1002,7 +1051,15 @@ declare const eval: any`
                         };
                         return createWatchedSystem([file1, file2, libFile, tsconfig], { currentDirectory: projectRoot });
                     },
-                    changes: emptyArray
+                    changes: [
+                        noopChange,
+                        {
+                            caption: "Add new file",
+                            change: sys => sys.writeFile(`${projectRoot}/src/file3.ts`, `export const y = 10;`),
+                            timeouts: sys => sys.checkTimeoutQueueLengthAndRun(2), // To update program and failed lookups
+                        },
+                        noopChange,
+                    ]
                 });
             }
 
@@ -1019,6 +1076,11 @@ declare const eval: any`
             verifyWithOptions(
                 "when outDir is specified",
                 { module: ModuleKind.AMD, outDir: "build" }
+            );
+
+            verifyWithOptions(
+                "without outDir or outFile is specified with declaration enabled",
+                { module: ModuleKind.AMD, declaration: true }
             );
 
             verifyWithOptions(
@@ -1532,6 +1594,34 @@ const b: string = a;`
                     change: sys => sys.writeFile(`${projectRoot}/a.ts`, `
 
 import { x } from "../b";`),
+                    timeouts: runQueuedTimeoutCallbacks,
+                },
+            ]
+        });
+
+        verifyTscWatch({
+            scenario,
+            subScenario: "updates emit on jsx option change",
+            commandLineArgs: ["-w"],
+            sys: () => {
+                const index: File = {
+                    path: `${projectRoot}/index.tsx`,
+                    content: `declare var React: any;\nconst d = <div />;`
+                };
+                const configFile: File = {
+                    path: `${projectRoot}/tsconfig.json`,
+                    content: JSON.stringify({
+                        compilerOptions: {
+                            jsx: "preserve"
+                        }
+                    })
+                };
+                return createWatchedSystem([index, configFile, libFile], { currentDirectory: projectRoot });
+            },
+            changes: [
+                {
+                    caption: "Update 'jsx' to 'react'",
+                    change: sys => sys.writeFile(`${projectRoot}/tsconfig.json`, '{ "compilerOptions": { "jsx": "react" } }'),
                     timeouts: runQueuedTimeoutCallbacks,
                 },
             ]
